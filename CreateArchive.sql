@@ -1,10 +1,10 @@
 CREATE TABLE IF NOT EXISTS archive (
   image_id SERIAL NOT NULL PRIMARY KEY,
-  image_rel_path VARCHAR(255),
-  thumbnail_rel_path VARCHAR(255),
+  image_path VARCHAR(255),
+  thumbnail_path VARCHAR(255),
 
-  CONSTRAINT image_rel_path_unique UNIQUE (image_rel_path),
-  CONSTRAINT thumbnail_rel_path_unique UNIQUE (thumbnail_rel_path)
+  CONSTRAINT image_path_unique UNIQUE (image_path),
+  CONSTRAINT thumbnail_path_unique UNIQUE (thumbnail_path)
 );
 
 CREATE TABLE IF NOT EXISTS contributor (
