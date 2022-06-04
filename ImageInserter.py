@@ -53,7 +53,7 @@ LOGGER.setLevel([
     "INFO",
     "DEBUG"][_ARGS.verbose])
 
-DB_FILE = Path(_ARGS.database).resolve()
+DB_FILE = str(Path(_ARGS.database).resolve())
 GALLERY_PATH = Path(_ARGS.gallery).resolve()
 THUMBNAIL_DIR_PATH = Path(_ARGS.thumbnail).resolve()
 
@@ -146,10 +146,6 @@ def create_new_image_record(image_abs_path):
         if not _ARGS.dry_run:
             proc = generate_thumbnail(image_abs_path, thumbnail_abs_path)
             proc.check_returncode()
-            sstdout = str(proc.stdout).strip()
-            sstderr = str(proc.stderr).strip()
-            log_debug("Convert stdout: %s", sstdout) if sstdout != "b''" else None
-            log_debug("Convert stderr: %s", sstderr) if sstderr != "b''" else None
 
             DB_CUR.execute(INSERT_ARCHIVE_IMAGE_AND_THUMBNAIL,
                            (image_abs_path, thumbnail_abs_path))
@@ -200,7 +196,7 @@ def generate_thumbnail(image_abs_path, thumbnail_abs_path):
     cmd = ["convert"] + input_options + \
         input_file + output_options + output_file
     log_debug("Generating thumbnail with: %s", cmd)
-    return run(cmd, capture_output=True)
+    return run(cmd)
 
 
 def walk_gallery(parent):
