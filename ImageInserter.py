@@ -28,7 +28,7 @@ def get_args(optional_arg_string: str = None):
 
 
 # _ARGS = get_args(
-#     "archive.db mock_archive/images/ mock_archive/thumbnails/ -v 3 --dry-run")
+#     "archive.db mock_archive/  --log-file test.log")
 _ARGS = get_args()
 
 LOGGER = logging.getLogger(__name__)
@@ -124,12 +124,45 @@ def log_error(msg, *args, exc_info=None, **kwargs):
     LOGGER.error(msg, *args, exc_info=exc_info, **kwargs)
 
 
+def log_warning(msg, *args, **kwargs):
+    LOGGER.warning(msg, *args, **kwargs)
+
+
 def in_ignored_types(image_abs_path):
-    return str(Path(image_abs_path).stem) in {".gif", ".GIF", ".webm", ".mp4", ".m4v"}
+    path_suffix = Path(image_abs_path).suffix
+    ignored_extensions = {".webm", ".mp4", ".m4v"}
+    return path_suffix in ignored_extensions
+
+
+def is_gif(image_path):
+    path_suffix = Path(image_path).suffix
+    gif_exts = {".gif", ".GIF"}
+    return path_suffix in gif_exts
 
 
 def make_path_rel_to_archive(path_string):
     return str(Path(path_string).relative_to(GALLERY_PATH))
+
+
+def insert_to_db(image_path, thumbnail_path):
+    if not _ARGS.dry_run:
+        DB_CUR.execute(INSERT_ARCHIVE_IMAGE_AND_THUMBNAIL,
+                       (image_path, thumbnail_path))
+    log_info("%s | %s", image_path, thumbnail_path)
+    return True
+
+
+def handle_image_insertion(image_abs_path, th_suffix=".jpg"):
+    thumbnail_abs_path = generate_unique_thumbnail_name(th_suffix=th_suffix)
+
+    if not _ARGS.dry_run:
+        proc = generate_thumbnail(image_abs_path, thumbnail_abs_path)
+        proc.check_returncode()
+
+    image_abs_path = make_path_rel_to_archive(image_abs_path)
+    thumbnail_abs_path = make_path_rel_to_archive(thumbnail_abs_path)
+
+    return insert_to_db(image_abs_path, thumbnail_abs_path)
 
 
 def create_new_image_record(image_abs_path):
@@ -151,44 +184,38 @@ def create_new_image_record(image_abs_path):
             return True
 
         if in_ignored_types(image_abs_path):
-            log_info(
-                "Image is of ignored type, either gif or video. Not processing. %s",
+            log_warning(
+                "Image is of ignored type. Not processing. %s",
                 image_abs_path)
             return True
 
-        thumbnail_abs_path = generate_unique_thumbnail_name()
+        if is_gif(image_abs_path):
+            handle_image_insertion(image_abs_path, th_suffix=".gif")
+        else:
+            handle_image_insertion(image_abs_path)
 
-        if not _ARGS.dry_run:
-            proc = generate_thumbnail(image_abs_path, thumbnail_abs_path)
-            proc.check_returncode()
-
-            image_abs_path = make_path_rel_to_archive(image_abs_path)
-            thumbnail_abs_path = make_path_rel_to_archive(thumbnail_abs_path)
-
-            DB_CUR.execute(INSERT_ARCHIVE_IMAGE_AND_THUMBNAIL,
-                           (image_abs_path, thumbnail_abs_path))
-
-        log_info("%s | %s", image_abs_path, thumbnail_abs_path)
-        return True
     except sqlite3.DatabaseError as e:
-        log_error("Exception inserting images: %s | %s",
-                  image_abs_path, thumbnail_abs_path, exc_info=e)
+        log_error("Exception creating record for: %s",
+                  image_abs_path, exc_info=e)
         return False
     except CalledProcessError as e:
         log_error("Exception occurred when calling OS process: ", exc_info=e)
         return False
 
 
-def generate_unique_thumbnail_name():
+def generate_unique_thumbnail_name(th_suffix=".jpg"):
     """Generate unique name for thumbnail that's not in the database.
 
     dry-run agnostic
+
+    Args:
+        th_suffix = ".jpg": suffix of the thumbnail. Used to appropriately create gif thumbnails if needed.
 
     Returns:
         str: unique absolute path name
     """
     def name_gen(): return str(THUMBNAIL_DIR_PATH.resolve() /
-                               ("".join(choices(ascii_letters + digits, k=16)) + ".th.jpg"))
+                               ("".join(choices(ascii_letters + digits, k=16)) + ".th" + th_suffix))
     name = name_gen()
     while(thumbnail_exists(name)):
         name = name_gen()
@@ -232,25 +259,41 @@ def walk_gallery(parent):
 
 
 def main():
-    log_info("Beginning image insertion")
-    current_dir = Path(getcwd()).resolve()
-    log_debug("Launched from %s", current_dir)
-    chdir(IMAGES_PATH)
-    log_debug("Changed directory to %s", IMAGES_PATH)
+    try:
+        log_info("Beginning image insertion")
+        current_dir = Path(getcwd()).resolve()
+        log_debug("Launched from %s", current_dir)
+        chdir(IMAGES_PATH)
+        log_debug("Changed directory to %s", IMAGES_PATH)
 
-    walk_gallery(IMAGES_PATH)
+        walk_gallery(IMAGES_PATH)
 
-    if not _ARGS.dry_run:
-        DB_CONN.commit()
-        DB_CONN.close()
-        log_debug("Committed changes")
-    else:
-        log_debug("Did not commit changes")
+        if not _ARGS.dry_run:
+            DB_CONN.commit()
+            DB_CONN.close()
+            log_debug("Committed changes")
+        else:
+            log_debug("Did not commit changes")
 
-    chdir(current_dir)
-    log_debug("Changed directory back to %s", current_dir)
-    log_info("Image insertion complete\n")
-    exit()
+        chdir(current_dir)
+        log_debug("Changed directory back to %s", current_dir)
+        log_info("Image insertion complete\n")
+        exit()
+    except KeyboardInterrupt:
+        quit_without_commit = input("Commit changes made and exit? (y/N)\n").strip() in {
+            "", "no", "No", "NO", "nO", "n", "N"}
+        if quit_without_commit:
+            try:
+                DB_CONN.close()
+            except Exception:
+                ...
+            log_info("Quitting manually without committing.")
+            exit()
+        else:
+            DB_CONN.commit()
+            DB_CONN.close()
+            log_info("Quitting manually and committing.")
+            exit()
 
 
 if __name__ == "__main__":
