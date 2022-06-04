@@ -89,7 +89,8 @@ def thumbnail_exists(thumbnail_abs_path):
     """
     if _ARGS.dry_run:
         return False
-    _r = DB_CUR.execute(DOES_THUMBNAIL_EXIST, (thumbnail_abs_path,))
+    _r = DB_CUR.execute(DOES_THUMBNAIL_EXIST,
+                        (make_path_rel_to_archive(thumbnail_abs_path),))
     r, *_ = _r.fetchone()
     return r == 1
 
@@ -107,7 +108,8 @@ def image_exists(image_abs_path):
     """
     if _ARGS.dry_run:
         return False
-    _r = DB_CUR.execute(DOES_IMAGE_EXIST, (image_abs_path,))
+    _r = DB_CUR.execute(
+        DOES_IMAGE_EXIST, (make_path_rel_to_archive(image_abs_path),))
     r, *_ = _r.fetchone()
     return r == 1
 
@@ -155,14 +157,22 @@ def insert_to_db(image_path, thumbnail_path):
 def handle_image_insertion(image_abs_path, th_suffix=".jpg"):
     thumbnail_abs_path = generate_unique_thumbnail_name(th_suffix=th_suffix)
 
-    if not _ARGS.dry_run:
-        proc = generate_thumbnail(image_abs_path, thumbnail_abs_path)
-        proc.check_returncode()
+    try:
+        if not _ARGS.dry_run:
+            proc = generate_thumbnail(image_abs_path, thumbnail_abs_path)
+            proc.check_returncode()
 
-    image_abs_path = make_path_rel_to_archive(image_abs_path)
-    thumbnail_abs_path = make_path_rel_to_archive(thumbnail_abs_path)
+        image_abs_path = make_path_rel_to_archive(image_abs_path)
+        thumbnail_abs_path = make_path_rel_to_archive(thumbnail_abs_path)
 
-    return insert_to_db(image_abs_path, thumbnail_abs_path)
+        return insert_to_db(image_abs_path, thumbnail_abs_path)
+    except sqlite3.DatabaseError as e:
+        log_error("Exception creating record for: %s",
+                  image_abs_path, exc_info=e)
+        return False
+    except CalledProcessError as e:
+        log_error("Exception occurred when calling OS process: ", exc_info=e)
+        return False
 
 
 def create_new_image_record(image_abs_path):
@@ -178,29 +188,20 @@ def create_new_image_record(image_abs_path):
     Returns:
         bool: True if success or image already exists
     """
-    try:
-        if image_exists(image_abs_path):
-            log_debug("Image already exists in db: %s", image_abs_path)
-            return True
+    if image_exists(image_abs_path):
+        log_debug("Image already exists in db: %s", image_abs_path)
+        return True
 
-        if in_ignored_types(image_abs_path):
-            log_warning(
-                "Image is of ignored type. Not processing. %s",
-                image_abs_path)
-            return True
+    if in_ignored_types(image_abs_path):
+        log_warning(
+            "Image is of ignored type. Not processing. %s",
+            image_abs_path)
+        return True
 
-        if is_gif(image_abs_path):
-            return handle_image_insertion(image_abs_path, th_suffix=".gif")
-        else:
-            return handle_image_insertion(image_abs_path)
-
-    except sqlite3.DatabaseError as e:
-        log_error("Exception creating record for: %s",
-                  image_abs_path, exc_info=e)
-        return False
-    except CalledProcessError as e:
-        log_error("Exception occurred when calling OS process: ", exc_info=e)
-        return False
+    if is_gif(image_abs_path):
+        return handle_image_insertion(image_abs_path, th_suffix=".gif")
+    else:
+        return handle_image_insertion(image_abs_path)
 
 
 def generate_unique_thumbnail_name(th_suffix=".jpg"):
