@@ -1,5 +1,5 @@
 from pathlib import Path
-from subprocess import CalledProcessError, run
+from subprocess import CalledProcessError, CompletedProcess, run
 from os import chdir, getcwd
 import sqlite3
 from argparse import ArgumentParser
@@ -20,17 +20,33 @@ def get_args(optional_arg_string: str = None):
     p.add_argument("--dry-run", action="store_true",
                    help="Run script and show files being inserted without \
             inserting or generating anything.")
+    p.add_argument("--log-file", default=None, help="File to store logs to. \
+        Logs are appended. Do not specify to log to stdout and stderr.")
     if optional_arg_string is not None:
         return p.parse_args(optional_arg_string.split())
     return p.parse_args()
 
 
-_ARGS = get_args(
-    "archive.db mock_archive/images/ mock_archive/thumbnails/ -v 3 --dry-run")
-# _ARGS=get_args()
+# _ARGS = get_args(
+#     "archive.db mock_archive/images/ mock_archive/thumbnails/ -v 3 --dry-run")
+_ARGS = get_args()
 
 LOGGER = logging.getLogger(__name__)
-logging.basicConfig(format='%(message)s')
+if not _ARGS.dry_run:
+    _formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')
+    logging.basicConfig(format='%(asctime)s | %(levelname)s | %(message)s')
+else:
+    _formatter = logging.Formatter(
+        'DRY-RUN | %(asctime)s | %(levelname)s | %(message)s')
+    logging.basicConfig(
+        format='DRY-RUN | %(asctime)s | %(levelname)s | %(message)s')
+
+if _ARGS.log_file is not None:
+    file_handler = logging.FileHandler(_ARGS.log_file, mode="a")
+    file_handler.setFormatter(_formatter)
+    LOGGER.addHandler(file_handler)
+
+
 LOGGER.setLevel([
     "NOTSET",
     "WARNING",
@@ -54,6 +70,9 @@ INSERT INTO archive (image_path, thumbnail_path) VALUES (?,?)
 DOES_THUMBNAIL_EXIST = """
 VALUES(EXISTS(SELECT * FROM archive WHERE thumbnail_path = ?))
 """
+DOES_IMAGE_EXIST = """
+VALUES(EXISTS(SELECT * FROM archive WHERE image_path = ?))
+"""
 
 
 def thumbnail_exists(thumbnail_abs_path):
@@ -74,59 +93,82 @@ def thumbnail_exists(thumbnail_abs_path):
     return r == 1
 
 
+def image_exists(image_abs_path):
+    """Checks for existence of image in db
+
+    Handles dry-run, returns False
+
+    Args:
+        image_abs_path (str): abs path of image to check
+
+    Returns:
+        bool: True if exists
+    """
+    if _ARGS.dry_run:
+        return False
+    _r = DB_CUR.execute(DOES_IMAGE_EXIST, (image_abs_path,))
+    r, *_ = _r.fetchone()
+    return r == 1
+
+
 def log_info(msg, *args, **kwargs):
     LOGGER.info(msg, *args, **kwargs)
 
 
 def log_debug(msg, *args, **kwargs):
-    LOGGER.debug(f"\u001b[33m{msg}\u001b[0m", *args, **kwargs)
+    LOGGER.debug(msg, *args, **kwargs)
 
 
 def log_error(msg, *args, exc_info=None, **kwargs):
-    LOGGER.error(f"\u001b[31m{msg}\u001b[0m", *
-                 args, exc_info=exc_info, **kwargs)
-
-# TODO finish this function
+    LOGGER.error(msg, *args, exc_info=exc_info, **kwargs)
 
 
-def generate_thumbnail(image_abs_path, thumbnail_abs_path):
-    """Uses imagemagick to create a thumbnail
+def create_new_image_record(image_abs_path):
+    """Generate a new thumbnail and insert image record into database.
 
-    handles dry-run
+    Handles dry-run
 
     Args:
-        image_abs_path (str): absolute path to image
+        image_abs_path (str): absolute path of image
 
-        thumbnail_abs_path (str): absoltue path to thumbnail
+        thumbnail_abs_path (str): absolute path of thumbnail
 
     Returns:
-        bool: True if successful
+        bool: True if success or image already exists
     """
-    input_options = []
-    input_file = [image_abs_path]
-    output_options = ["-thumbnail", "300x300"]
-    output_file = [thumbnail_abs_path]
-    cmd = input_options + input_file + output_options + output_file
-    log_debug("Generating thumbnail with: %s", cmd)
+    try:
+        if image_exists(image_abs_path):
+            log_debug("Image already exists in db: %s", image_abs_path)
+            return True
 
-    if not _ARGS.dry_run:
-        proc = run(cmd, capture_output=True)
-        try:
+        thumbnail_abs_path = generate_unique_thumbnail_name()
+
+        if not _ARGS.dry_run:
+            proc = generate_thumbnail(image_abs_path, thumbnail_abs_path)
             proc.check_returncode()
-        except CalledProcessError as e:
-            log_error(
-                "CalledProcessException when generating image thumbnail", exc_info=e)
-            return False
-        log_debug(proc.stdout)
-        log_debug(proc.stderr)
+            sstdout = str(proc.stdout).strip()
+            sstderr = str(proc.stderr).strip()
+            log_debug("Convert stdout: %s", sstdout) if sstdout != "b''" else None
+            log_debug("Convert stderr: %s", sstderr) if sstderr != "b''" else None
 
-    return True
+            DB_CUR.execute(INSERT_ARCHIVE_IMAGE_AND_THUMBNAIL,
+                           (image_abs_path, thumbnail_abs_path))
+
+        log_info("%s | %s", image_abs_path, thumbnail_abs_path)
+        return True
+    except sqlite3.DatabaseError as e:
+        log_error("Exception inserting images: %s | %s",
+                  image_abs_path, thumbnail_abs_path, exc_info=e)
+        return False
+    except CalledProcessError as e:
+        log_error("Exception occurred when calling OS process: ", exc_info=e)
+        return False
 
 
 def generate_unique_thumbnail_name():
     """Generate unique name for thumbnail that's not in the database.
 
-    Handles dry-run
+    dry-run agnostic
 
     Returns:
         str: unique absolute path name
@@ -140,29 +182,25 @@ def generate_unique_thumbnail_name():
     return name
 
 
-def insert_image(image_abs_path, thumbnail_abs_path):
-    """Insert image to DB
-
-    Handles dry-run
+def generate_thumbnail(image_abs_path, thumbnail_abs_path):
+    """Uses imagemagick to create a thumbnail
 
     Args:
-        image_abs_path (str): absolute path of image
+        image_abs_path (str): absolute path to image
 
-        thumbnail_abs_path (str): absolute path of thumbnail
+        thumbnail_abs_path (str): absoltue path to thumbnail
 
     Returns:
-        bool: True if success
+        CompletedProcess: of convert, to validate
     """
-    try:
-        if not _ARGS.dry_run:
-            DB_CUR.execute(INSERT_ARCHIVE_IMAGE_AND_THUMBNAIL,
-                           (image_abs_path, thumbnail_abs_path))
-        log_info("%s||%s", image_abs_path, thumbnail_abs_path)
-        return True
-    except Exception as e:
-        log_error("Exception inserting images: ",
-                  image_abs_path, thumbnail_abs_path, exc_info=e)
-        return False
+    input_options = []
+    input_file = [image_abs_path]
+    output_options = ["-thumbnail", "300x300"]
+    output_file = [thumbnail_abs_path]
+    cmd = ["convert"] + input_options + \
+        input_file + output_options + output_file
+    log_debug("Generating thumbnail with: %s", cmd)
+    return run(cmd, capture_output=True)
 
 
 def walk_gallery(parent):
@@ -176,14 +214,11 @@ def walk_gallery(parent):
         if child.is_dir():
             walk_gallery(child.resolve())
         else:
-            _child_abs = child.resolve()
-            _child_abs_thumbnail = generate_unique_thumbnail_name()
-            if not generate_thumbnail(str(_child_abs), str(_child_abs_thumbnail)):
-                continue
-            insert_image(str(_child_abs), str(_child_abs_thumbnail))
+            create_new_image_record(str(child.resolve()))
 
 
 def main():
+    log_info("Beginning image insertion")
     current_dir = Path(getcwd()).resolve()
     log_debug("Launched from %s", current_dir)
     chdir(GALLERY_PATH)
@@ -200,6 +235,7 @@ def main():
 
     chdir(current_dir)
     log_debug("Changed directory back to %s", current_dir)
+    log_info("Image insertion complete\n")
     exit()
 
 
