@@ -12,8 +12,8 @@ from string import ascii_letters, digits
 def get_args(optional_arg_string: str = None):
     p = ArgumentParser()
     p.add_argument("database", help="Database file path")
-    p.add_argument("gallery", help="path to gallery directory")
-    p.add_argument("thumbnail", help="The directory that holds the thumbnails")
+    p.add_argument("gallery", help="path to root gallery folder, \
+        this folder should contain 'images/' and 'thumbnails/' as immediate children.")
     p.add_argument("-v", "--verbose", type=int, choices=[0, 1, 2, 3], default=2,
                    help="Logging level with 3 being the most verbose and \
                        -v 0 being quiet. defaults to 2")
@@ -55,7 +55,8 @@ LOGGER.setLevel([
 
 DB_FILE = str(Path(_ARGS.database).resolve())
 GALLERY_PATH = Path(_ARGS.gallery).resolve()
-THUMBNAIL_DIR_PATH = Path(_ARGS.thumbnail).resolve()
+IMAGES_PATH = GALLERY_PATH / "images"
+THUMBNAIL_DIR_PATH = GALLERY_PATH / "thumbnails"
 
 DB_CONN = None
 DB_CUR = None
@@ -123,6 +124,14 @@ def log_error(msg, *args, exc_info=None, **kwargs):
     LOGGER.error(msg, *args, exc_info=exc_info, **kwargs)
 
 
+def in_ignored_types(image_abs_path):
+    return str(Path(image_abs_path).stem) in {".gif", ".GIF", ".webm", ".mp4", ".m4v"}
+
+
+def make_path_rel_to_archive(path_string):
+    return str(Path(path_string).relative_to(GALLERY_PATH))
+
+
 def create_new_image_record(image_abs_path):
     """Generate a new thumbnail and insert image record into database.
 
@@ -141,11 +150,20 @@ def create_new_image_record(image_abs_path):
             log_debug("Image already exists in db: %s", image_abs_path)
             return True
 
+        if in_ignored_types(image_abs_path):
+            log_info(
+                "Image is of ignored type, either gif or video. Not processing. %s",
+                image_abs_path)
+            return True
+
         thumbnail_abs_path = generate_unique_thumbnail_name()
 
         if not _ARGS.dry_run:
             proc = generate_thumbnail(image_abs_path, thumbnail_abs_path)
             proc.check_returncode()
+
+            image_abs_path = make_path_rel_to_archive(image_abs_path)
+            thumbnail_abs_path = make_path_rel_to_archive(thumbnail_abs_path)
 
             DB_CUR.execute(INSERT_ARCHIVE_IMAGE_AND_THUMBNAIL,
                            (image_abs_path, thumbnail_abs_path))
@@ -217,10 +235,10 @@ def main():
     log_info("Beginning image insertion")
     current_dir = Path(getcwd()).resolve()
     log_debug("Launched from %s", current_dir)
-    chdir(GALLERY_PATH)
-    log_debug("Changed directory to %s", GALLERY_PATH)
+    chdir(IMAGES_PATH)
+    log_debug("Changed directory to %s", IMAGES_PATH)
 
-    walk_gallery(Path(getcwd()).resolve())
+    walk_gallery(IMAGES_PATH)
 
     if not _ARGS.dry_run:
         DB_CONN.commit()
