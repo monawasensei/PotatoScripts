@@ -190,9 +190,9 @@ def create_new_image_record(image_abs_path):
             return True
 
         if is_gif(image_abs_path):
-            handle_image_insertion(image_abs_path, th_suffix=".gif")
+            return handle_image_insertion(image_abs_path, th_suffix=".gif")
         else:
-            handle_image_insertion(image_abs_path)
+            return handle_image_insertion(image_abs_path)
 
     except sqlite3.DatabaseError as e:
         log_error("Exception creating record for: %s",
