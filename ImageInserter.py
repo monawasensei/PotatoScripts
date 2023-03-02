@@ -132,7 +132,7 @@ def log_warning(msg, *args, **kwargs):
 
 def in_ignored_types(image_abs_path):
     path_suffix = Path(image_abs_path).suffix
-    ignored_extensions = {".webm", ".mp4", ".m4v"}
+    ignored_extensions = {".webm", ".mp4", ".m4v", ".txt"}
     return path_suffix in ignored_extensions
 
 
